@@ -21,9 +21,9 @@ services:
       - DEFAULT_OUTPUT_DIR=/app/output
       - VINYLFLOW_INBOX_DIR=/app/inbox
       - VINYLFLOW_PROCESSED_DIR=/app/processed
-      # Inbox sessions are re-ingested after reaping, but boundary edits are
-      # lost — keep them around long enough to finish a listening session.
-      - TEMP_TTL_HOURS=${TEMP_TTL_HOURS:-72}
+      # Only the MP3 preview and unsaved boundary edits expire; inbox sources
+      # are never deleted (unprocessed ones are re-ingested).  90 days.
+      - TEMP_TTL_HOURS=${TEMP_TTL_HOURS:-2160}
       - PORT=8000
     # Run as the host user so files rsynced in by the Pi stay writable.
     user: "${UID:-1000}:${GID:-1000}"
