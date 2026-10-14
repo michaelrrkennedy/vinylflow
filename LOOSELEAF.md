@@ -12,7 +12,7 @@ Pi (records 24-bit WAV) ──rsync──▶ ubuntu:~/vinylflow/inbox/
                                     ├─ <name>.json   sidecar (sent first)
                                     └─ <name>.wav    mezzanine
 VinylFlow ingests → you check splits in the UI → Process
-  → tracks:  ~/vinylflow/output/<Artist> - <Album>/
+  → tracks:  ~/music/vinyl/<Artist> - <Album>/   (MUSIC_DIR)
   → source:  ~/vinylflow/processed/<name>.wav  (+ .json)
   → POST sidecar.callback_url  (Pi marks the release processed)
 ```
@@ -31,8 +31,15 @@ BIND_ADDR=$(tailscale ip -4)
 UID=$(id -u)
 GID=$(id -g)
 ENV
-mkdir -p inbox processed output temp_uploads config
+mkdir -p inbox processed temp_uploads config ~/music/vinyl
 docker compose -f docker-compose.looseleaf.yml up -d --build
 ```
 
 Then open `http://<ubuntu tailscale name>:8000` from any device on the tailnet.
+
+## Track previews
+
+`GET /api/library/<Artist> - <Album>/<file>` serves finished tracks from the
+output folder so the Looseleaf collection page can play them. AIFF is
+transcoded to a cached MP3 (in `temp_uploads/library_previews/`) since most
+browsers can't play it.

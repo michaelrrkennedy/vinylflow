@@ -3,7 +3,8 @@
 #   docker compose -f docker-compose.looseleaf.yml up -d --build
 #
 # The Pi rsyncs recordings into ./inbox; finished sources move to ./processed
-# and split/tagged tracks land in ./output.  BIND_ADDR should be the box's
+# and split/tagged tracks land in MUSIC_DIR (default /home/mk/music/vinyl),
+# which must exist and be owned by UID:GID before the first run.  BIND_ADDR should be the box's
 # Tailscale IP so the UI (which has no auth) isn't exposed on the LAN.
 services:
   vinylflow:
@@ -30,7 +31,7 @@ services:
     volumes:
       - ./inbox:/app/inbox
       - ./processed:/app/processed
-      - ./output:/app/output
+      - ${MUSIC_DIR:-/home/mk/music/vinyl}:/app/output
       - ./temp_uploads:/app/temp_uploads
       - ./config:/app/config
     restart: unless-stopped

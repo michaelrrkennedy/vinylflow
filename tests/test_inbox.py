@@ -141,3 +141,18 @@ def test_delete_inbox_session_moves_source_to_skipped(api_inbox):
     assert resp.status_code == 200
     assert (api_inbox.processed_dir / "skipped" / "rec.wav").exists()
     assert asyncio.run(api.ingest_inbox_once()) == 0
+
+
+# --- library ---------------------------------------------------------------
+
+def test_library_serves_output_files_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(api.config, "default_output_dir", str(tmp_path / "music"))
+    album = tmp_path / "music" / "A - T"
+    album.mkdir(parents=True)
+    (album / "A1-x.flac").write_bytes(b"fLaC")
+    (tmp_path / "secret.flac").write_bytes(b"no")
+    client = TestClient(api.app)
+
+    assert client.get("/api/library/A - T/A1-x.flac").content == b"fLaC"
+    assert client.get("/api/library/A - T/missing.flac").status_code == 404
+    assert client.get("/api/library/..%2Fsecret.flac").status_code == 404

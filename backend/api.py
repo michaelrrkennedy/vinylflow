@@ -912,6 +912,44 @@ def _serialize_release(release) -> dict:
     }
 
 
+_BROWSER_PLAYABLE = {".flac", ".mp3", ".wav"}
+
+
+def library_file(rel_path: str) -> Path:
+    """Resolve ``rel_path`` inside the output folder, refusing anything outside it."""
+    root = Path(config.default_output_dir).resolve()
+    path = (root / rel_path).resolve()
+    if root not in path.parents or not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    return path
+
+
+@app.get("/api/library/{rel_path:path}")
+async def get_library_file(rel_path: str):
+    """Serve a finished track for in-browser preview (used by the Looseleaf
+    collection page).  AIFF isn't playable in most browsers, so it is
+    transcoded to a cached MP3 on first request."""
+    from fastapi.responses import FileResponse
+
+    path = library_file(rel_path)
+    if path.suffix.lower() in _BROWSER_PLAYABLE:
+        return FileResponse(path)
+
+    cache_dir = UPLOAD_DIR / "library_previews"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = uuid.uuid5(uuid.NAMESPACE_URL, f"{path}:{path.stat().st_mtime_ns}")
+    preview = cache_dir / f"{key}.mp3"
+    if not preview.exists():
+        tmp = preview.with_suffix(".part.mp3")
+        await asyncio.to_thread(
+            run_ffmpeg,
+            ["-y", "-i", str(path), "-vn", "-codec:a", "libmp3lame", "-b:a", "192k", str(tmp)],
+            check=True, capture_output=True,
+        )
+        tmp.rename(preview)
+    return FileResponse(preview, media_type="audio/mpeg")
+
+
 @app.get("/api/release/{release_id}")
 async def get_release(release_id: int):
     """Fetch one Discogs release — used to pre-select an inbox Session's release."""
