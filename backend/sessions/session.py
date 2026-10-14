@@ -53,6 +53,12 @@ class Session:
     # while a client is already streaming the source).
     playback_audio: Optional[Path] = None
 
+    # "upload" for browser uploads, "inbox" for files ingested from the
+    # watched inbox folder (see backend/inbox.py).  ``meta`` carries the
+    # inbox sidecar (e.g. a pre-linked ``discogs_release_id``).
+    origin: str = "upload"
+    meta: dict = field(default_factory=dict)
+
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
 

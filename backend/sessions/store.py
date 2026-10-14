@@ -33,6 +33,8 @@ class SessionStore:
         source_filename: str,
         source_duration: float,
         source_size: int,
+        origin: str = "upload",
+        meta: Optional[dict] = None,
     ) -> Session:
         session = Session(
             id=session_id,
@@ -40,6 +42,8 @@ class SessionStore:
             source_audio=source_audio,
             source_duration=source_duration,
             source_size=source_size,
+            origin=origin,
+            meta=dict(meta or {}),
         )
         with self._lock:
             self._sessions[session_id] = session

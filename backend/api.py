@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from config import Config
 from audio_processor import AudioProcessor, SUPPORTED_INPUT_EXTENSIONS, OUTPUT_FORMATS, run_ffmpeg
 from metadata_handler import MetadataHandler
+from backend.inbox import Inbox, notify as notify_inbox_callback
 from backend.sessions import (
     OutputSpec,
     ProgressEvent,
@@ -91,6 +92,10 @@ def _serialize_uploaded(session: Session) -> dict:
         "size": session.source_size,
         "duration": session.source_duration,
         "status": _session_status(session),
+        "origin": session.origin,
+        "discogs_release_id": session.meta.get("discogs_release_id"),
+        "artist": session.meta.get("artist"),
+        "title": session.meta.get("title"),
     }
 
 
@@ -145,6 +150,17 @@ metadata_handler = MetadataHandler(config.discogs_token, config.discogs_user_age
 _upload_dir_env = os.getenv("VINYLFLOW_UPLOAD_DIR")
 UPLOAD_DIR = Path(_upload_dir_env) if _upload_dir_env else Path(__file__).parent.parent / "temp_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# Watched inbox (optional).  When VINYLFLOW_INBOX_DIR is set, recordings
+# dropped there become Sessions automatically — see backend/inbox.py.
+_inbox_dir_env = os.getenv("VINYLFLOW_INBOX_DIR")
+_processed_dir_env = os.getenv("VINYLFLOW_PROCESSED_DIR")
+inbox: Optional[Inbox] = (
+    Inbox(Path(_inbox_dir_env), Path(_processed_dir_env) if _processed_dir_env else None)
+    if _inbox_dir_env
+    else None
+)
+INBOX_POLL_SECONDS = float(os.getenv("VINYLFLOW_INBOX_POLL_SECONDS", "10"))
 
 
 def get_session_path(file_id: str, filename: str = None) -> Path:
@@ -205,10 +221,80 @@ async def cleanup_old_files():
         await asyncio.sleep(30 * 60)
 
 
+async def ingest_inbox_once() -> int:
+    """Create Sessions for inbox files that don't have a live one.
+
+    Sessions reaped by the TTL cleanup are simply re-ingested on the next
+    scan: the source stays in the inbox until it's processed or skipped.
+    """
+    if inbox is None:
+        return 0
+    live = {s.source_audio for s in session_store.list() if s.origin == "inbox"}
+    created = 0
+    for audio in await asyncio.to_thread(inbox.pending):
+        if audio in live:
+            continue
+        file_id = str(uuid.uuid4())
+        get_session_path(file_id).mkdir(parents=True, exist_ok=True)
+        try:
+            duration = await asyncio.to_thread(audio_processor.get_audio_duration, audio)
+        except Exception:
+            duration = None
+        meta = inbox.read_sidecar(audio)
+        session_store.create(
+            session_id=file_id,
+            source_audio=audio,
+            source_filename=audio.name,
+            source_duration=float(duration or 0),
+            source_size=audio.stat().st_size,
+            origin="inbox",
+            meta=meta,
+        )
+        asyncio.create_task(preconvert_to_mp3(file_id, audio))
+        logger.info("Ingested %s from inbox as %s", audio.name, file_id)
+        created += 1
+    if created:
+        await broadcast_message({"type": "queue_updated"})
+    return created
+
+
+async def watch_inbox():
+    while True:
+        try:
+            await ingest_inbox_once()
+        except Exception as e:
+            print(f"Inbox scan error: {e}")
+        await asyncio.sleep(INBOX_POLL_SECONDS)
+
+
+def finalize_inbox_session(session: Session) -> None:
+    """Move a processed inbox source out of the inbox and notify the recorder."""
+    old = session.source_audio
+    meta = dict(session.meta)
+    if old.exists():
+        new = inbox.archive(old)
+        session.source_audio = new
+        if session.playback_audio == old:
+            session.playback_audio = new
+    run = session.last_run
+    callback_url = meta.pop("callback_url", None)
+    if callback_url:
+        notify_inbox_callback(callback_url, {
+            **meta,
+            "status": "complete",
+            "source_filename": session.source_filename,
+            "archived_source": str(session.source_audio),
+            "output_folder": str(run.output_folder) if run and run.output_folder else None,
+            "tracks": list(run.output_files) if run else [],
+        })
+
+
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks on app startup."""
     asyncio.create_task(cleanup_old_files())
+    if inbox is not None:
+        asyncio.create_task(watch_inbox())
 
 
 # Pydantic models for API requests/responses
@@ -803,29 +889,36 @@ async def search_discogs(request: SearchRequest):
             metadata_handler.search_releases, request.query, max_results=request.max_results
         )
 
-        results = []
-        for idx, release in releases:
-            results.append(
-                {
-                    "id": release.id,
-                    "artist": release.artist,
-                    "title": release.title,
-                    "year": release.year,
-                    "label": release.label,
-                    "format": release.format,
-                    "cover_url": release.cover_url,
-                    "uri": release.uri,
-                    "tracks": [
-                        {"position": t.position, "title": t.title, "duration": t.duration_str}
-                        for t in release.tracks
-                    ],
-                }
-            )
-
-        return {"results": results}
+        return {"results": [_serialize_release(release) for _idx, release in releases]}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _serialize_release(release) -> dict:
+    return {
+        "id": release.id,
+        "artist": release.artist,
+        "title": release.title,
+        "year": release.year,
+        "label": release.label,
+        "format": release.format,
+        "cover_url": release.cover_url,
+        "uri": release.uri,
+        "tracks": [
+            {"position": t.position, "title": t.title, "duration": t.duration_str}
+            for t in release.tracks
+        ],
+    }
+
+
+@app.get("/api/release/{release_id}")
+async def get_release(release_id: int):
+    """Fetch one Discogs release — used to pre-select an inbox Session's release."""
+    release = await asyncio.to_thread(metadata_handler.get_release_by_id, release_id)
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found")
+    return _serialize_release(release)
 
 
 @app.post("/api/process")
@@ -943,7 +1036,13 @@ async def process_file_background(request: ProcessRequest):
     except Exception:
         # The Pipeline already emitted an "error" event and marked the
         # Session FAILED.  Nothing to clean up here.
-        pass
+        return
+
+    if session.origin == "inbox" and inbox is not None and session.state == SessionState.COMPLETE:
+        try:
+            await asyncio.to_thread(finalize_inbox_session, session)
+        except Exception as e:
+            print(f"Inbox finalize failed for {file_id}: {e}")
 
 
 @app.get("/api/process/{job_id}")
@@ -975,8 +1074,13 @@ async def get_queue():
 @app.delete("/api/queue/{file_id}")
 async def remove_from_queue(file_id: str):
     """Remove a Session and its on-disk source folder."""
-    if session_store.get(file_id) is None:
+    session = session_store.get(file_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="File not found")
+    # An inbox source left in place would just be re-ingested on the next
+    # scan, so removing it from the queue means "skip": move it aside.
+    if session.origin == "inbox" and inbox is not None and session.source_audio.parent == inbox.inbox_dir:
+        await asyncio.to_thread(inbox.archive, session.source_audio, "skipped")
     await asyncio.to_thread(cleanup_session, file_id)
     return {"status": "removed"}
 

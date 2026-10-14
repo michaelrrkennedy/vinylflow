@@ -1,0 +1,42 @@
+# Looseleaf deployment (Ubuntu box, reached over Tailscale).
+#
+#   docker compose -f docker-compose.looseleaf.yml up -d --build
+#
+# The Pi rsyncs recordings into ./inbox; finished sources move to ./processed
+# and split/tagged tracks land in ./output.  BIND_ADDR should be the box's
+# Tailscale IP so the UI (which has no auth) isn't exposed on the LAN.
+services:
+  vinylflow:
+    build: .
+    container_name: vinylflow
+    ports:
+      - "${BIND_ADDR:-127.0.0.1}:${PORT:-8000}:8000"
+    environment:
+      - DISCOGS_USER_TOKEN=${DISCOGS_USER_TOKEN}
+      - DISCOGS_USER_AGENT=${DISCOGS_USER_AGENT:-LooseleafVinylFlow/1.0}
+      - DEFAULT_SILENCE_THRESHOLD=${DEFAULT_SILENCE_THRESHOLD:--40}
+      - DEFAULT_MIN_SILENCE_DURATION=${DEFAULT_MIN_SILENCE_DURATION:-1.0}
+      - DEFAULT_MIN_TRACK_LENGTH=${DEFAULT_MIN_TRACK_LENGTH:-30}
+      - DEFAULT_FLAC_COMPRESSION=${DEFAULT_FLAC_COMPRESSION:-8}
+      - DEFAULT_OUTPUT_DIR=/app/output
+      - VINYLFLOW_INBOX_DIR=/app/inbox
+      - VINYLFLOW_PROCESSED_DIR=/app/processed
+      # Inbox sessions are re-ingested after reaping, but boundary edits are
+      # lost — keep them around long enough to finish a listening session.
+      - TEMP_TTL_HOURS=${TEMP_TTL_HOURS:-72}
+      - PORT=8000
+    # Run as the host user so files rsynced in by the Pi stay writable.
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./inbox:/app/inbox
+      - ./processed:/app/processed
+      - ./output:/app/output
+      - ./temp_uploads:/app/temp_uploads
+      - ./config:/app/config
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/queue', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

@@ -120,11 +120,14 @@ function vinylApp() {
             await this.loadConfig();
             await this.loadFormats();
             await this.checkStatus();
+            await this.loadQueue();
             this.connectWebSocket();
+            // Fallback for missed 'queue_updated' broadcasts (WS reconnects).
+            setInterval(() => this.loadQueue(), 30000);
 
             this.$watch('currentFile', (file) => {
                 if (file && !this.searchQuery) {
-                    this.searchQuery = this.cleanFilename(file.filename);
+                    this.searchQuery = this.searchQueryFor(file);
                 }
             });
         },
@@ -230,6 +233,10 @@ function vinylApp() {
                     }
                     break;
 
+                case 'queue_updated':
+                    this.loadQueue();
+                    break;
+
                 case 'error':
                     if (data.file_id === this.currentFileId) {
                         this.stopProcessPolling();
@@ -244,6 +251,52 @@ function vinylApp() {
                     }
                     break;
             }
+        },
+
+        /**
+         * Merge server-side Sessions (e.g. files ingested from the inbox)
+         * into the queue.  Local status wins for files we already track,
+         * since WebSocket updates may be fresher than the poll.
+         */
+        async loadQueue() {
+            try {
+                const response = await fetch('/api/queue');
+                if (!response.ok) return;
+                const data = await response.json();
+                for (const file of data.uploaded) {
+                    if (!this.uploadedFiles.some(f => f.id === file.id)) {
+                        this.uploadedFiles.push(file);
+                    }
+                }
+                if (!this.currentFile) {
+                    const next = this.uploadedFiles.find(f => f.status === 'uploaded');
+                    if (next) this.selectFile(next.id);
+                }
+            } catch (error) {
+                console.error('Failed to load queue:', error);
+            }
+        },
+
+        /**
+         * Pre-select the Discogs release named by an inbox sidecar.
+         * Falls back to a normal search if the release can't be fetched.
+         */
+        async loadLinkedRelease(releaseId) {
+            try {
+                const response = await fetch(`/api/release/${releaseId}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const release = await response.json();
+                this.searchResults = [release];
+                this.selectRelease(release);
+            } catch (error) {
+                console.error('Failed to load linked release:', error);
+                if (this.searchQuery) await this.searchDiscogs();
+            }
+        },
+
+        searchQueryFor(file) {
+            if (file.artist && file.title) return `${file.artist} ${file.title}`;
+            return this.cleanFilename(file.filename);
         },
 
         /**
@@ -499,7 +552,7 @@ function vinylApp() {
             this.destroyWaveform();
 
             if (this.currentFile) {
-                this.searchQuery = this.cleanFilename(this.currentFile.filename);
+                this.searchQuery = this.searchQueryFor(this.currentFile);
             }
         },
 
@@ -559,7 +612,9 @@ function vinylApp() {
 
                 await this.initWaveform();
 
-                if (this.searchQuery) {
+                if (this.currentFile?.discogs_release_id) {
+                    await this.loadLinkedRelease(this.currentFile.discogs_release_id);
+                } else if (this.searchQuery) {
                     await this.searchDiscogs();
                 }
             } catch (error) {
