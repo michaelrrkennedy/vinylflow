@@ -156,3 +156,11 @@ def test_library_serves_output_files_only(tmp_path, monkeypatch):
     assert client.get("/api/library/A - T/A1-x.flac").content == b"fLaC"
     assert client.get("/api/library/A - T/missing.flac").status_code == 404
     assert client.get("/api/library/..%2Fsecret.flac").status_code == 404
+
+
+def test_queue_exposes_sidecar_side(api_inbox):
+    _drop(api_inbox.inbox_dir, "rec.wav", {"discogs_release_id": 42, "side": "B"})
+    asyncio.run(api.ingest_inbox_once())
+
+    queue = TestClient(api.app).get("/api/queue").json()["uploaded"]
+    assert queue[0]["side"] == "B"

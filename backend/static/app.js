@@ -59,6 +59,9 @@ function vinylApp() {
         searchQuery: '',
         searchResults: [],
         selectedRelease: null,
+        // Side of the record this file holds ("B"), from the inbox sidecar or
+        // picked in the UI; only that side's Discogs tracks are offered.
+        side: null,
         trackMappingReversed: false,
         customMapping: [],
 
@@ -775,6 +778,10 @@ function vinylApp() {
          * Select a release from search results
          */
         selectRelease(release) {
+            if (!release.allTracks) release.allTracks = release.tracks;
+            const fileSide = (this.currentFile?.side || '').toUpperCase();
+            this.side = this.releaseSides(release).includes(fileSide) ? fileSide : null;
+            release.tracks = this.tracksForSide(release, this.side);
             this.selectedRelease = release;
             this.trackMappingReversed = false;
             this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
@@ -788,6 +795,40 @@ function vinylApp() {
             } else {
                 this.trackCountMismatch = false;
             }
+        },
+
+        /** Vinyl side letter of a Discogs position: "B2" -> "B". */
+        sideOf(position) {
+            const m = /^\s*([A-Za-z]+)/.exec(position || '');
+            return m ? m[1].toUpperCase() : null;
+        },
+
+        releaseSides(release) {
+            const sides = [];
+            for (const t of (release?.allTracks || release?.tracks || [])) {
+                const s = this.sideOf(t.position);
+                if (s && !sides.includes(s)) sides.push(s);
+            }
+            return sides;
+        },
+
+        tracksForSide(release, side) {
+            const all = release.allTracks || release.tracks;
+            if (!side) return all;
+            const onSide = all.filter(t => this.sideOf(t.position) === side);
+            return onSide.length ? onSide : all;
+        },
+
+        /** Switch the selected release between one side and the whole record. */
+        chooseSide(side) {
+            const release = this.selectedRelease;
+            if (!release) return;
+            this.side = side;
+            release.tracks = this.tracksForSide(release, side);
+            this.trackMappingReversed = false;
+            this.customMapping = Array.from({ length: this.detectedTracks.length }, (_, i) => i);
+            const activeTrackCount = this.detectedTracks.filter(t => !t.ignored).length;
+            this.trackCountMismatch = activeTrackCount !== release.tracks.length;
         },
 
         /**

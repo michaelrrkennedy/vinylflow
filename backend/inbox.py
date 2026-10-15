@@ -16,6 +16,7 @@ Sidecar keys (all optional)::
     {
       "discogs_release_id": 249504,      # pre-selects the Discogs release
       "artist": "...", "title": "...",   # shown in the queue / search box
+      "side": "B",                       # only side B's tracks are offered
       "callback_url": "http://pi:5001/api/vinylflow/complete",
       ...                                 # anything else is passed back
     }

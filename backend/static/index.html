@@ -693,6 +693,16 @@
                         <div class="mb-4 p-4 rounded-lg" style="background-color: rgba(229, 161, 0, 0.1);">
                             <p class="font-bold text-primary" x-text="selectedRelease ? `${selectedRelease.artist} - ${selectedRelease.title}` : ''"></p>
                             <p class="text-sm text-secondary" x-text="selectedRelease ? `${selectedRelease.year} • ${selectedRelease.label}` : ''"></p>
+                            <div x-show="releaseSides(selectedRelease).length > 1" class="flex items-center gap-1.5 mt-2">
+                                <span class="text-sm text-secondary mr-1">This recording is</span>
+                                <template x-for="s in releaseSides(selectedRelease)" :key="s">
+                                    <button @click="chooseSide(s)" class="px-2.5 py-1 rounded text-sm font-semibold"
+                                            :class="side === s ? 'btn-primary' : 'bg-page text-primary'"
+                                            x-text="'Side ' + s"></button>
+                                </template>
+                                <button @click="chooseSide(null)" class="px-2.5 py-1 rounded text-sm font-semibold"
+                                        :class="side === null ? 'btn-primary' : 'bg-page text-primary'">Whole record</button>
+                            </div>
                         </div>
 
                         <!-- Output Format Selector -->

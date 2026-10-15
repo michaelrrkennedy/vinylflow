@@ -96,6 +96,7 @@ def _serialize_uploaded(session: Session) -> dict:
         "discogs_release_id": session.meta.get("discogs_release_id"),
         "artist": session.meta.get("artist"),
         "title": session.meta.get("title"),
+        "side": session.meta.get("side"),
     }
 
 
