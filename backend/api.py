@@ -968,13 +968,16 @@ async def delete_library_file(rel_path: str):
 
 
 @app.get("/api/library/{rel_path:path}")
-async def get_library_file(rel_path: str):
+async def get_library_file(rel_path: str, original: bool = False):
     """Serve a finished track for in-browser preview (used by the Looseleaf
     collection page).  AIFF isn't playable in most browsers, so it is
-    transcoded to a cached MP3 on first request."""
+    transcoded to a cached MP3 on first request.  ``?original=1`` serves the
+    file untouched (dragging a track into a DAW)."""
     from fastapi.responses import FileResponse
 
     path = library_file(rel_path)
+    if original:
+        return FileResponse(path, filename=path.name)
     if path.suffix.lower() in _BROWSER_PLAYABLE:
         return FileResponse(path)
 

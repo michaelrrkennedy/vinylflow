@@ -247,3 +247,13 @@ def test_library_info_gives_duration_and_peaks(tmp_path, monkeypatch):
     assert len(info["peaks"]) == 200 and 0 < max(info["peaks"]) <= 1
     assert client.get("/api/library-info/A - T/B1-x.aiff?points=200").json() == info  # cached
     assert client.get("/api/library-info/..%2Fx.aiff").status_code == 404
+
+
+def test_library_original_serves_file_untouched(tmp_path, monkeypatch):
+    monkeypatch.setattr(api.config, "default_output_dir", str(tmp_path / "music"))
+    album = tmp_path / "music" / "A - T"
+    album.mkdir(parents=True)
+    (album / "B1-x.aiff").write_bytes(b"FORM....AIFF")
+    r = TestClient(api.app).get("/api/library/A - T/B1-x.aiff?original=1")
+    assert r.content == b"FORM....AIFF"
+    assert "B1-x.aiff" in r.headers["content-disposition"]
