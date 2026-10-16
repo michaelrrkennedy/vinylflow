@@ -58,6 +58,15 @@ def run_ffmpeg(args: list, *, text: bool = True, **kwargs) -> subprocess.Complet
     return subprocess.run(cmd, **kwargs)
 
 
+_SAMPLE_RATE_RE = re.compile(r"Audio:.*?(\d+) Hz")
+
+
+def parse_sample_rate(ffmpeg_stderr: str) -> Optional[int]:
+    """Sample rate of the first audio stream from ffmpeg's stderr header, or None."""
+    match = _SAMPLE_RATE_RE.search(ffmpeg_stderr or "")
+    return int(match.group(1)) if match else None
+
+
 _DURATION_HEADER_RE = re.compile(r"Duration: (\d{2}):(\d{2}):(\d{2}\.\d{2})")
 
 
@@ -139,6 +148,15 @@ class AudioProcessor:
             return parse_duration_header(result.stderr)
         except Exception as e:
             print(f"Error getting audio duration: {e}")
+            return None
+
+    def get_sample_rate(self, file_path: Path) -> Optional[int]:
+        """Sample rate of ``file_path`` in Hz, or None if it can't be read."""
+        try:
+            result = run_ffmpeg(["-i", str(file_path)], capture_output=True, timeout=30)
+            return parse_sample_rate(result.stderr)
+        except Exception as e:
+            print(f"Error getting sample rate: {e}")
             return None
 
     def detect_silence(self, file_path: Path, verbose=False) -> List[Track]:
@@ -350,6 +368,11 @@ class AudioProcessor:
         af_chain = self._build_restoration_filters(restoration_level, hum_freq)
         if af_chain:
             args.extend(["-af", af_chain])
+            # loudnorm resamples to 192 kHz internally and keeps that rate on
+            # output; pin the source rate so tracks aren't 4x the size
+            source_rate = self.get_sample_rate(input_file)
+            if source_rate:
+                args.extend(["-ar", str(source_rate)])
 
         args.extend([
             "-y",  # Overwrite output file

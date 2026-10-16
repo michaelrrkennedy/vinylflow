@@ -59,6 +59,9 @@ function vinylApp() {
         searchQuery: '',
         searchResults: [],
         selectedRelease: null,
+        // Tracks the current file should contain (its sidecar release/side), shown before analysis
+        expectedTracks: [],
+        releaseCache: {},
         // Side of the record this file holds ("B"), from the inbox sidecar or
         // picked in the UI; only that side's Discogs tracks are offered.
         side: null,
@@ -79,11 +82,11 @@ function vinylApp() {
         lastProgressAt: null,
 
         // Output format
-        outputFormat: 'flac',
+        outputFormat: 'aiff',   // Looseleaf default
         availableFormats: [],
 
         // Audio restoration
-        restorationLevel: 0,   // 0=disabled, 1=enabled
+        restorationLevel: 1,   // 0=disabled, 1=enabled (Looseleaf default: on)
 
         // Config
         config: {
@@ -543,6 +546,8 @@ function vinylApp() {
         selectFile(fileId) {
             this.currentFileId = fileId;
             this.currentFile = this.uploadedFiles.find(f => f.id === fileId);
+            this.expectedTracks = [];
+            this.loadExpectedTracks(this.currentFile);
             this.detectedTracks = [];
             this.searchResults = [];
             this.selectedRelease = null;
@@ -794,6 +799,27 @@ function vinylApp() {
                 this.trackCountMismatch = true;
             } else {
                 this.trackCountMismatch = false;
+            }
+        },
+
+        /** Show the sidecar release's tracklist (just its side) before analysis. */
+        async loadExpectedTracks(file) {
+            const releaseId = file?.discogs_release_id;
+            if (!releaseId) return;
+            try {
+                if (!this.releaseCache[releaseId]) {
+                    const response = await fetch(`/api/release/${releaseId}`);
+                    if (!response.ok) return;
+                    this.releaseCache[releaseId] = await response.json();
+                }
+                if (this.currentFile !== file) return;  // moved on meanwhile
+                const release = this.releaseCache[releaseId];
+                const side = (file.side || '').toUpperCase();
+                this.expectedTracks = side
+                    ? this.tracksForSide({ tracks: release.tracks }, side)
+                    : release.tracks;
+            } catch (error) {
+                console.error('Failed to load expected tracks:', error);
             }
         },
 

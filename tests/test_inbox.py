@@ -164,3 +164,10 @@ def test_queue_exposes_sidecar_side(api_inbox):
 
     queue = TestClient(api.app).get("/api/queue").json()["uploaded"]
     assert queue[0]["side"] == "B"
+
+
+def test_parse_sample_rate():
+    from audio_processor import parse_sample_rate
+    stderr = "  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, 2 channels, s16, 1536 kb/s"
+    assert parse_sample_rate(stderr) == 48000
+    assert parse_sample_rate("no audio here") is None
