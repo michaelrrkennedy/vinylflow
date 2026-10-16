@@ -215,3 +215,18 @@ def test_normalise_gain_is_linear_and_peak_capped(monkeypatch, i, tp, gain):
     monkeypatch.setattr(ap_mod, "run_ffmpeg", lambda *a, **k: SimpleNamespace(stderr=_loudnorm_stderr(i, tp)))
     result = AudioProcessor()._normalise_gain(Path("x.wav"), Track(1, 0, 100), "highpass=f=15")
     assert (round(result, 2) if result is not None else None) == gain
+
+
+def test_library_delete_stays_inside_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(api.config, "default_output_dir", str(tmp_path / "music"))
+    album = tmp_path / "music" / "A - T"
+    album.mkdir(parents=True)
+    (album / "B2-x.aiff").write_bytes(b"FORM")
+    (tmp_path / "outside.aiff").write_bytes(b"no")
+    client = TestClient(api.app)
+
+    assert client.delete("/api/library/A - T/B2-x.aiff").status_code == 200
+    assert not (album / "B2-x.aiff").exists()
+    assert client.delete("/api/library/A - T/B2-x.aiff").status_code == 404
+    assert client.delete("/api/library/..%2Foutside.aiff").status_code == 404
+    assert (tmp_path / "outside.aiff").exists()

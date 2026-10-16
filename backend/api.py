@@ -775,7 +775,9 @@ async def get_waveform_peaks(file_id: str):
 
     file_path = session.source_audio
 
-    peaks_cache_path = get_session_path(file_id, "peaks.json")
+    # v2: ~100 peaks/s (was 3000 for the whole file, ~3/s on a 16 min side,
+    # which went blocky when zoomed in to place a cut)
+    peaks_cache_path = get_session_path(file_id, "peaks-v2.json")
     if peaks_cache_path.exists():
         with open(peaks_cache_path, "r") as f:
             cached_data = json.load(f)
@@ -806,8 +808,8 @@ async def get_waveform_peaks(file_id: str):
         # int32 before abs: abs(-32768) overflows back to -32768 in int16.
         audio_data = np.frombuffer(result.stdout, dtype=np.int16).astype(np.int32)
 
-        target_peaks = 3000
-        samples_per_peak = max(1, len(audio_data) // target_peaks)
+        peaks_per_second = 100
+        samples_per_peak = max(1, 8000 // peaks_per_second)  # decoded at 8 kHz above
 
         full = (len(audio_data) // samples_per_peak) * samples_per_peak
         peaks = []
@@ -821,6 +823,7 @@ async def get_waveform_peaks(file_id: str):
 
         if len(peaks) == 0:
             peaks = [0.0]
+        peaks = [round(p, 4) for p in peaks]  # keeps the JSON ~1 MB for a long side
 
         response_data = {
             "peaks": peaks,
@@ -923,6 +926,15 @@ def library_file(rel_path: str) -> Path:
     if root not in path.parents or not path.is_file():
         raise HTTPException(status_code=404, detail="Not found")
     return path
+
+
+@app.delete("/api/library/{rel_path:path}")
+async def delete_library_file(rel_path: str):
+    """Delete a finished track from the output folder (Looseleaf: tracks not kept)."""
+    path = library_file(rel_path)
+    path.unlink()
+    logger.info("Deleted library file %s", path)
+    return {"deleted": rel_path}
 
 
 @app.get("/api/library/{rel_path:path}")

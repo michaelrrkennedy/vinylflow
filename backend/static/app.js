@@ -978,6 +978,7 @@ function vinylApp() {
          */
         playPreview(trackNumber) {
             if (!this.currentFileId) return;
+            this.stopAudition();
 
             const audioPlayer = this.$refs.audioPlayer;
             const track = this.detectedTracks.find(t => t.number === trackNumber);
@@ -1467,10 +1468,14 @@ function vinylApp() {
         },
 
         playWaveform() {
-            if (this.waveform) this.waveform.play();
+            if (!this.waveform) return;
+            this.stopAudition();  // plain play shouldn't stop at an audition's end
+            this.stopPreview();
+            this.waveform.play();
         },
 
         stopWaveform() {
+            this.stopAudition();
             if (this.waveform) this.waveform.pause();
         },
 
@@ -1503,6 +1508,7 @@ function vinylApp() {
             const wasThis = this.auditioning && this.auditioning.track === track.number && this.auditioning.edge === edge;
             this.stopAudition();
             if (wasThis) return;  // second click stops
+            this.stopPreview();   // never two players at once
 
             const seconds = 5;
             const from = edge === 'start' ? track.start : Math.max(track.start, track.end - seconds);
