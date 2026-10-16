@@ -21,6 +21,7 @@ from typing import List, Tuple, Optional
 from track_boundaries import (
     Track,
     boundaries_for_track_count,
+    boundaries_from_duration_guide,
     boundaries_from_durations,
     boundaries_from_gaps,
     parse_silence_log,
@@ -297,6 +298,45 @@ class AudioProcessor:
         # the first note can be well under the usual minimum gap length
         strict_gaps, _ = self._scan_gaps(file_path, self.silence_threshold, min(self.min_silence_duration, 0.5))
         return refine_rescan_boundaries(tracks, strict_gaps, total_duration, self.min_track_length)
+
+    ENVELOPE_FRAME = 0.1  # seconds per loudness frame
+
+    def loudness_envelope(self, file_path: Path):
+        """Mono loudness in dB per ``ENVELOPE_FRAME`` seconds (one ffmpeg decode)."""
+        import numpy as np
+
+        rate = 8000
+        result = run_ffmpeg(
+            ["-i", str(file_path), "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"],
+            text=False, capture_output=True, timeout=300,
+        )
+        samples = np.frombuffer(result.stdout, dtype="<i2").astype(np.float64) / 32768
+        hop = int(rate * self.ENVELOPE_FRAME)
+        frames = samples[: samples.size // hop * hop].reshape(-1, hop)
+        rms = np.sqrt((frames ** 2).mean(axis=1))
+        return 20 * np.log10(np.maximum(rms, 10 ** (-90 / 20)))
+
+    def detect_tracks_from_durations(self, file_path: Path, durations: List[float]):
+        """Split using the side's Discogs durations to choose the track changes.
+
+        Returns ``(tracks, info)`` like ``detect_tracks_for_count``.
+        """
+        try:
+            strict_gaps, total_duration = self._scan_gaps(
+                file_path, self.silence_threshold, min(self.min_silence_duration, 0.5)
+            )
+            env = self.loudness_envelope(file_path)
+            tracks, info = boundaries_from_duration_guide(
+                env, self.ENVELOPE_FRAME, strict_gaps, total_duration,
+                durations, self.min_track_length,
+            )
+            info.update(matched=len(tracks) == len(durations), guided=True)
+            return tracks, info
+
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Silence detection timed out (>5 minutes)")
+        except Exception as e:
+            raise RuntimeError(f"Duration-guided split failed: {e}")
 
     def split_tracks_duration_based(
         self, file_path: Path, durations: List[float], verbose=False

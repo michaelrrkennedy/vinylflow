@@ -37,6 +37,18 @@ docker compose -f docker-compose.looseleaf.yml up -d --build
 
 Then open `http://<ubuntu tailscale name>:8000` from any device on the tailnet.
 
+## Splitting by Discogs track lengths
+
+When every track on the recording's side has a Discogs length, Analyze (and
+Smart Rescan) uses them to choose the track changes
+(`track_boundaries.boundaries_from_duration_guide`): the lengths are scaled
+to fit the music, and each change goes at the real silence (strict scan) or
+loudness dip that best fits them. So a quiet break mid-song isn't mistaken
+for a gap, and records that fade or segue between tracks still split. Changes
+that weren't at a clear silence are badged "check · fade" / "check · no gap"
+in the editor; the badge clears once you move that cut. Without lengths
+for every track, plain silence detection runs as before.
+
 ## Track previews
 
 `GET /api/library/<Artist> - <Album>/<file>` serves finished tracks from the

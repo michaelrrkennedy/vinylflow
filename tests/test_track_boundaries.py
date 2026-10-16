@@ -17,6 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from audio_processor import AudioProcessor
 from track_boundaries import (
     Gap,
@@ -320,3 +322,70 @@ def test_detect_silence_wires_parse_and_boundaries():
     assert [(t.start, t.end) for t in tracks] == [(0.0, 180.0), (182.0, 360.0)]
     # The old _calculate_tracks would have produced (182.0, 400.0) here.
     assert all(t.end <= 360.0 for t in tracks)
+
+
+# --- boundaries_from_duration_guide (Discogs durations pick the changes) -----
+
+def _envelope(total, quiet_spans, music_db=-20.0, quiet_db=-70.0, frame=0.1):
+    """Loudness envelope: music everywhere except the given (start, end, dB) spans."""
+    import numpy as np
+
+    env = np.full(int(total / frame), music_db)
+    for a, b, *level in quiet_spans:
+        env[int(a / frame):int(b / frame)] = level[0] if level else quiet_db
+    return env
+
+
+def test_duration_guide_picks_the_gaps_that_fit_the_durations():
+    from track_boundaries import boundaries_from_duration_guide
+
+    # Real gaps at 200 and 420; a decoy silence at 100 (a break in track 1)
+    # that's just as silent.  Durations are a few seconds out, as on Discogs.
+    gaps = [Gap(0.0, 2.0), Gap(100.0, 102.0), Gap(200.0, 202.5), Gap(420.0, 422.5), Gap(600.0, None)]
+    env = _envelope(610, [(0, 2), (100, 102), (200, 202.5), (420, 422.5), (600, 610)])
+    tracks, info = boundaries_from_duration_guide(env, 0.1, gaps, 610.0, [195, 222, 175], 30)
+
+    assert len(tracks) == 3
+    assert tracks[0].start == pytest.approx(2.0)
+    assert tracks[0].end == pytest.approx(201.0)   # padded 1 s into the gap
+    assert tracks[1].start == pytest.approx(201.5)
+    assert tracks[1].end == pytest.approx(421.0)
+    assert tracks[2].end == pytest.approx(600.0)
+    assert [s["kind"] for s in info["separators"]] == ["gap", "gap"]
+
+
+def test_duration_guide_finds_a_fade_between_tracks():
+    from track_boundaries import boundaries_from_duration_guide
+
+    # No true silence: track 1 fades to -45 dB around 180 s, then track 2.
+    env = _envelope(400, [(178, 182, -45.0)])
+    tracks, info = boundaries_from_duration_guide(env, 0.1, [], 400.0, [170, 220], 30)
+
+    assert info["separators"][0]["kind"] == "quiet"
+    assert 178 <= tracks[0].end <= 182
+    assert tracks[1].start == pytest.approx(tracks[0].end)
+
+
+def test_duration_guide_cuts_at_the_expected_time_when_nothing_dips():
+    from track_boundaries import boundaries_from_duration_guide
+
+    env = _envelope(300, [])
+    tracks, info = boundaries_from_duration_guide(env, 0.1, [], 300.0, [100, 200], 30)
+
+    assert info["separators"][0]["kind"] == "cut"
+    assert tracks[0].end == pytest.approx(100.0)
+
+
+def test_duration_guide_single_track_spans_the_music():
+    from track_boundaries import boundaries_from_duration_guide
+
+    gaps = [Gap(0.0, 3.0), Gap(250.0, None)]
+    tracks, info = boundaries_from_duration_guide(_envelope(260, []), 0.1, gaps, 260.0, [240], 30)
+    assert [(t.start, t.end) for t in tracks] == [(3.0, 250.0)]
+
+
+def test_duration_guide_rejects_missing_durations():
+    from track_boundaries import boundaries_from_duration_guide
+
+    with pytest.raises(ValueError):
+        boundaries_from_duration_guide(_envelope(100, []), 0.1, [], 100.0, [50, 0], 30)

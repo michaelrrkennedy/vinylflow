@@ -272,3 +272,171 @@ def refine_rescan_boundaries(
         r.vinyl_number, r.title = t.vinyl_number, t.title
         refined.append(r)
     return refined
+
+
+
+def quiet_points(env_db, frame_s: float, start: float, end: float):
+    """Candidate track changes from a loudness envelope (dB per frame).
+
+    A candidate is a dip: the quietest point within 3 s either side, at
+    least 4 dB below the surrounding 20 s.  True silence makes a deep dip;
+    tracks that fade into each other still leave a shallow one.  Returns
+    ``(position, cut_in, cut_out, depth_db, level_db)`` tuples, where the cut
+    spans the frames within 3 dB of the dip's floor (at most 6 s each way)
+    and the position is its middle.
+    """
+    import numpy as np
+
+    env = np.asarray(env_db, dtype=float)
+    if env.size < 3:
+        return []
+    power = 10 ** (env / 10)
+
+    def mean_db(width):
+        k = max(1, int(round(width / frame_s)))
+        kernel = np.ones(k) / k
+        return 10 * np.log10(np.convolve(power, kernel, mode="same") + 1e-12)
+
+    smooth, context = mean_db(0.5), mean_db(20.0)
+    w = max(1, int(round(3.0 / frame_s)))
+    padded = np.pad(smooth, w, mode="edge")
+    local_min = np.lib.stride_tricks.sliding_window_view(padded, 2 * w + 1).min(axis=1)
+    reach = int(round(6.0 / frame_s))
+
+    points, last_out = [], -1.0
+    for i in np.flatnonzero((smooth <= local_min) & (context - smooth >= 4.0)):
+        t = (i + 0.5) * frame_s
+        if not start < t < end or t <= last_out:
+            continue
+        floor = smooth[i] + 3.0
+        lo = i
+        while lo > 0 and i - lo < reach and smooth[lo - 1] <= floor:
+            lo -= 1
+        hi = i
+        while hi < smooth.size - 1 and hi - i < reach and smooth[hi + 1] <= floor:
+            hi += 1
+        cut_in, cut_out = float(lo * frame_s), float((hi + 1) * frame_s)
+        points.append(((cut_in + cut_out) / 2, cut_in, cut_out,
+                       float(context[i] - smooth[i]), float(smooth[i])))
+        last_out = cut_out
+    return points
+
+
+def boundaries_from_duration_guide(
+    env_db,
+    frame_s: float,
+    strict_gaps: List[Gap],
+    total_duration: float,
+    durations: List[float],
+    min_track_length: float,
+):
+    """Split a side using its Discogs track lengths to pick the track changes.
+
+    The music runs from the end of the strict scan's lead-in silence to the
+    start of its lead-out silence.  Between those, one change is chosen per
+    track from the strict scan's silences and the envelope's quiet points, by dynamic programming over two
+    things: how closely each resulting Track's length matches its Discogs
+    duration (scaled so the durations fill the music, and loosely — Discogs
+    lengths are often tens of seconds out), and how deep the dip is.  Where
+    nothing fits, a cut goes at the expected time.
+
+    Returns ``(tracks, info)``; ``info["separators"]`` holds one entry per
+    track change: ``{"time", "kind", "offset"}`` where kind is "gap" (silence
+    by the strict scan), "quiet" (a dip, e.g. a fade between tracks — worth checking)
+    or "cut" (no dip found), and ``offset`` is seconds from where the
+    durations alone put it.
+    """
+    n = len(durations)
+    if n < 1 or any(d <= 0 for d in durations):
+        raise ValueError("every track needs a duration")
+
+    start, end = 0.0, total_duration
+    lead = [g for g in strict_gaps if g.end is not None and g.start < min_track_length]
+    if lead:
+        start = lead[-1].end
+    tail = [g for g in strict_gaps
+            if (g.end is None or total_duration - g.end < min_track_length) and g.start > start]
+    if tail:
+        end = tail[0].start
+
+    if n == 1:
+        return [Track(1, start, end)], {"separators": [], "start": start, "end": end, "cost": 0.0}
+
+    # Durations rarely sum exactly to the music (gaps, Discogs rounding);
+    # scale them to fit, unless the span looks wrong (noise run to EOF).
+    scale = min(1.08, max(0.92, (end - start) / sum(durations)))
+    cum, expected = 0.0, []
+    for d in durations[:-1]:
+        cum += d
+        expected.append(start + cum * scale)
+
+    # Candidates: (position, cut_in, cut_out, bonus, kind).  Real silence
+    # (the strict scan's gaps) is cut exactly and scores best, longer more
+    # so; envelope dips elsewhere score by depth; a plain cut at the
+    # expected time costs a fixed penalty.
+    silences = [g for g in strict_gaps if g.end is not None and start < g.start and g.end < end]
+    cands = [((g.start + g.end) / 2, g.start, g.end, 4.5 + 0.5 * min(g.end - g.start, 3.0), "gap")
+             for g in silences]
+    # A dip isn't silence, so it's a single cut point: nothing between the
+    # tracks is dropped.
+    for pos, _, _, depth, _ in quiet_points(env_db, frame_s, start, end):
+        if not any(g.start - 1 <= pos <= g.end + 1 for g in silences):
+            cands.append((pos, pos, pos, 0.15 * min(depth, 30.0), "quiet"))
+    cands += [(t, t, t, -2.0, "cut") for t in expected]
+    cands.sort(key=lambda c: c[0])
+
+    def seg_cost(length, k):
+        want = durations[k] * scale
+        if length < min(min_track_length, want / 2):
+            return None
+        sigma = max(5.0, 0.08 * want)
+        return min(((length - want) / sigma) ** 2, 9.0)
+
+    INF = float("inf")
+    m = len(cands)
+    # cost[k][j]: best cost with the k-th change (0-based) at candidate j
+    cost = [[INF] * m for _ in range(n - 1)]
+    back = [[-1] * m for _ in range(n - 1)]
+    for j, c in enumerate(cands):
+        sc = seg_cost(c[0] - start, 0)
+        if sc is not None:
+            cost[0][j] = sc - c[3]
+    for k in range(1, n - 1):
+        for j, c in enumerate(cands):
+            best, arg = INF, -1
+            for i in range(j):
+                if cost[k - 1][i] == INF:
+                    continue
+                sc = seg_cost(c[0] - cands[i][0], k)
+                if sc is not None and cost[k - 1][i] + sc < best:
+                    best, arg = cost[k - 1][i] + sc, i
+            if arg >= 0:
+                cost[k][j], back[k][j] = best - c[3], arg
+
+    best, arg = INF, -1
+    for j, c in enumerate(cands):
+        if cost[n - 2][j] == INF:
+            continue
+        sc = seg_cost(end - c[0], n - 1)
+        if sc is not None and cost[n - 2][j] + sc < best:
+            best, arg = cost[n - 2][j] + sc, j
+    if arg < 0:
+        raise ValueError("the durations don't fit this recording")
+
+    picks = []
+    for k in range(n - 2, -1, -1):
+        picks.append(arg)
+        arg = back[k][arg]
+    picks.reverse()
+
+    tracks, separators, t0 = [], [], start
+    for k, j in enumerate(picks):
+        pos, cut_in, cut_out, _, kind = cands[j]
+        tracks.append(Track(k + 1, t0, cut_in))
+        separators.append({"time": round(pos, 2), "kind": kind,
+                           "offset": round(pos - expected[k], 2)})
+        t0 = cut_out
+    tracks.append(Track(n, t0, end))
+
+    tracks = refine_rescan_boundaries(tracks, [], total_duration, min_track_length)
+    return tracks, {"separators": separators, "start": start, "end": end, "cost": best}

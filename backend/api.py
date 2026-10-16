@@ -311,6 +311,9 @@ class DurationBasedAnalyzeRequest(BaseModel):
 class RescanRequest(BaseModel):
     file_id: str
     expected_tracks: int
+    # The side's Discogs durations (seconds), when every track has one:
+    # they choose which silences are the track changes.
+    durations: Optional[List[float]] = None
 
 
 class SearchRequest(BaseModel):
@@ -595,9 +598,15 @@ async def rescan_file(request: RescanRequest):
     try:
         # Same full-file ffmpeg decode as /api/analyze (possibly several) —
         # keep it off the event loop.
-        tracks, scan_info = await asyncio.to_thread(
-            audio_processor.detect_tracks_for_count, file_path, request.expected_tracks
-        )
+        durations = request.durations
+        if durations and len(durations) == request.expected_tracks and all(d > 0 for d in durations):
+            tracks, scan_info = await asyncio.to_thread(
+                audio_processor.detect_tracks_from_durations, file_path, durations
+            )
+        else:
+            tracks, scan_info = await asyncio.to_thread(
+                audio_processor.detect_tracks_for_count, file_path, request.expected_tracks
+            )
 
         tracks_data = [
             {"number": i + 1, "start": track.start, "end": track.end, "duration": track.duration}

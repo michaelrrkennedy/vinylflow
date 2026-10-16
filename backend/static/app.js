@@ -594,23 +594,34 @@ function vinylApp() {
             this.rescanNotice = '';
             this.processingMessage = 'Analyzing...';
 
+            // With every track's Discogs length known, let those lengths
+            // choose the track changes; otherwise plain silence detection.
+            const durations = this.guideDurations();
+
             try {
-                const response = await fetch('/api/analyze', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ file_id: this.currentFileId })
-                });
+                const response = durations
+                    ? await fetch('/api/rescan', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            file_id: this.currentFileId,
+                            expected_tracks: durations.length,
+                            durations
+                        })
+                    })
+                    : await fetch('/api/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ file_id: this.currentFileId })
+                    });
                 const data = await response.json();
 
                 if (!response.ok || !data.tracks) {
                     throw new Error(data.detail || 'Analysis failed');
                 }
 
-                this.detectedTracks = data.tracks.map(track => ({
-                    ...track,
-                    editing: false,
-                    ignored: false
-                }));
+                this.detectedTracks = this.withChangeKinds(data.tracks, data.scan);
+                this.rescanNotice = data.scan?.guided ? this.guidedNotice(data.scan) : '';
                 this.processingMessage = '';
 
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
@@ -685,12 +696,14 @@ function vinylApp() {
             }
 
             try {
+                const durations = this.guideDurations(target);
                 const response = await fetch('/api/rescan', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         file_id: this.currentFileId,
-                        expected_tracks: target
+                        expected_tracks: target,
+                        durations
                     })
                 });
                 const data = await response.json();
@@ -699,11 +712,7 @@ function vinylApp() {
                     throw new Error(data.detail || 'Smart rescan failed');
                 }
 
-                this.detectedTracks = data.tracks.map(track => ({
-                    ...track,
-                    editing: false,
-                    ignored: false
-                }));
+                this.detectedTracks = this.withChangeKinds(data.tracks, data.scan);
                 this.processingMessage = '';
 
                 const file = this.uploadedFiles.find(f => f.id === this.currentFileId);
@@ -722,7 +731,9 @@ function vinylApp() {
                 this.destroyWaveform();
                 await this.initWaveform();
 
-                this.rescanNotice = data.matched
+                this.rescanNotice = data.scan?.guided
+                    ? this.guidedNotice(data.scan)
+                    : data.matched
                     ? `✅ Found exactly ${data.tracks.length} tracks.`
                     : `⚠️ Couldn't find exactly ${target} tracks — closest result is ${data.tracks.length}. Right-click the waveform to add or remove splits manually.`;
             } catch (error) {
@@ -840,6 +851,66 @@ function vinylApp() {
             return sides;
         },
 
+        /** "5:24" / "1:02:03" -> seconds; 0 when missing or unparseable. */
+        parseDuration(text) {
+            const parts = String(text || '').trim().split(':').map(Number);
+            if (parts.length < 2 || parts.some(n => !Number.isFinite(n))) return 0;
+            return parts.reduce((total, n) => total * 60 + n, 0);
+        },
+
+        /** The tracks this recording should hold: the chosen release's side, else the sidecar's. */
+        expectedTrackList() {
+            return this.selectedRelease?.tracks || this.sideTracklist || [];
+        },
+
+        /**
+         * Discogs lengths (seconds) of the expected tracks, or null unless
+         * every one has a length (and, given a count, there are that many).
+         */
+        guideDurations(count) {
+            const tracks = this.expectedTrackList();
+            if (!tracks.length || (count && tracks.length !== count)) return null;
+            const durations = tracks.map(t => this.parseDuration(t.duration));
+            return durations.every(d => d > 0) ? durations : null;
+        },
+
+        /**
+         * Detected tracks for the editor, each knowing how its start and end
+         * were found: "gap" (silence), "quiet" (a dip such as a fade — worth
+         * a listen) or "cut" (nothing to go on but the Discogs length).
+         */
+        withChangeKinds(tracks, scan) {
+            const seps = scan?.separators || [];
+            return tracks.map((track, i) => ({
+                ...track,
+                editing: false,
+                ignored: false,
+                startKind: i > 0 ? seps[i - 1]?.kind : null,
+                endKind: seps[i]?.kind || null
+            }));
+        },
+
+        /** The change between track idx and idx + 1 has been checked by hand. */
+        clearChangeKind(idx) {
+            const before = this.detectedTracks[idx], after = this.detectedTracks[idx + 1];
+            if (before) before.endKind = null;
+            if (after) after.startKind = null;
+        },
+
+        guidedNotice(scan) {
+            const seps = scan.separators || [];
+            const unsure = seps.filter(s => s.kind !== 'gap').length;
+            const base = `✅ Split using the Discogs track lengths.`;
+            if (!unsure) return seps.length ? `${base} Every track change is at a silent gap.` : base;
+            return `${base} ${unsure} of ${seps.length} track change${seps.length === 1 ? '' : 's'} `
+                + `had no clear silence (marked “check” below) — have a listen to those.`;
+        },
+
+        /** Discogs length of the idx-th expected track, for comparing with what was found. */
+        expectedDuration(idx) {
+            return this.expectedTrackList()[idx]?.duration || '';
+        },
+
         tracksForSide(release, side) {
             const all = release.allTracks || release.tracks;
             if (!side) return all;
@@ -891,18 +962,9 @@ function vinylApp() {
 
             try {
                 // Extract durations from Discogs tracks
-                const durations = this.selectedRelease.tracks.map(t => {
-                    // Parse duration string: "5:24" -> 324 seconds
-                    if (!t.duration) return 0;
-
-                    const parts = t.duration.split(':');
-                    if (parts.length === 2) {
-                        return parseInt(parts[0]) * 60 + parseInt(parts[1]);
-                    } else if (parts.length === 3) {
-                        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
-                    }
-                    return 0;
-                }).filter(d => d > 0);
+                const durations = this.selectedRelease.tracks
+                    .map(t => this.parseDuration(t.duration))
+                    .filter(d => d > 0);
 
                 if (durations.length !== this.selectedRelease.tracks.length) {
                     throw new Error('Could not parse all track durations from Discogs');
@@ -1016,6 +1078,7 @@ function vinylApp() {
             if (isNaN(newStart) || newStart < 0) return;
 
             this.detectedTracks[idx].start = newStart;
+            this.clearChangeKind(idx - 1);
             const end = this.detectedTracks[idx].end;
             this.detectedTracks[idx].duration = end - newStart;
         },
@@ -1028,6 +1091,7 @@ function vinylApp() {
             if (isNaN(newEnd) || newEnd < 0) return;
 
             this.detectedTracks[idx].end = newEnd;
+            this.clearChangeKind(idx);
             const start = this.detectedTracks[idx].start;
             this.detectedTracks[idx].duration = newEnd - start;
 
@@ -1450,6 +1514,10 @@ function vinylApp() {
             const track = this.detectedTracks.find(t => t.number === trackNumber);
 
             if (track) {
+                // A cut you've moved yourself no longer needs a "check" badge
+                const i = this.detectedTracks.indexOf(track);
+                if (Math.abs(region.start - track.start) > 0.01) this.clearChangeKind(i - 1);
+                if (Math.abs(region.end - track.end) > 0.01) this.clearChangeKind(i);
                 track.start = region.start;
                 track.end = region.end;
                 track.duration = region.end - region.start;
