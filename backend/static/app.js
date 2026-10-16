@@ -60,7 +60,7 @@ function vinylApp() {
         searchResults: [],
         selectedRelease: null,
         // Tracks the current file should contain (its sidecar release/side), shown before analysis
-        expectedTracks: [],
+        sideTracklist: [],
         releaseCache: {},
         // Side of the record this file holds ("B"), from the inbox sidecar or
         // picked in the UI; only that side's Discogs tracks are offered.
@@ -546,7 +546,7 @@ function vinylApp() {
         selectFile(fileId) {
             this.currentFileId = fileId;
             this.currentFile = this.uploadedFiles.find(f => f.id === fileId);
-            this.expectedTracks = [];
+            this.sideTracklist = [];
             this.loadExpectedTracks(this.currentFile);
             this.detectedTracks = [];
             this.searchResults = [];
@@ -815,9 +815,11 @@ function vinylApp() {
                 if (this.currentFile !== file) return;  // moved on meanwhile
                 const release = this.releaseCache[releaseId];
                 const side = (file.side || '').toUpperCase();
-                this.expectedTracks = side
+                this.sideTracklist = side
                     ? this.tracksForSide({ tracks: release.tracks }, side)
                     : release.tracks;
+                // Pre-fill Smart Rescan's track count with the side's length
+                this.expectedTracks = this.sideTracklist.length || null;
             } catch (error) {
                 console.error('Failed to load expected tracks:', error);
             }
