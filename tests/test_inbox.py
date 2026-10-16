@@ -195,3 +195,23 @@ def test_refine_rescan_never_moves_edges_inward():
     strict = [Gap(1.0, 6.0)]  # strict lead-in ends after the rescan start
     out = refine_rescan_boundaries(tracks, strict, total_duration=200, min_track_length=30)
     assert out[0].start == 2.0 and out[0].end == 100.0
+
+
+# --- linear normalisation ----------------------------------------------------
+
+def _loudnorm_stderr(i, tp):
+    return f'[Parsed_loudnorm_2 @ 0x1]\n{{\n\t"input_i" : "{i}",\n\t"input_tp" : "{tp}",\n\t"input_lra" : "9.30"\n}}\n'
+
+
+@pytest.mark.parametrize("i, tp, gain", [
+    ("-20.69", "-3.88", 2.88),   # peak-limited: stops at -1 dBTP, never compresses
+    ("-22.00", "-12.00", 8.00),  # loudness-limited: reaches -14 LUFS
+    ("-inf", "-inf", None),      # silent: leave alone
+])
+def test_normalise_gain_is_linear_and_peak_capped(monkeypatch, i, tp, gain):
+    from types import SimpleNamespace
+    import audio_processor as ap_mod
+    from audio_processor import AudioProcessor, Track
+    monkeypatch.setattr(ap_mod, "run_ffmpeg", lambda *a, **k: SimpleNamespace(stderr=_loudnorm_stderr(i, tp)))
+    result = AudioProcessor()._normalise_gain(Path("x.wav"), Track(1, 0, 100), "highpass=f=15")
+    assert (round(result, 2) if result is not None else None) == gain

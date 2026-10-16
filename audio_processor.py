@@ -6,6 +6,8 @@ Uses FFmpeg for audio analysis and format conversion.
 Supports FLAC, MP3, and AIFF output formats.
 """
 
+import json
+import math
 import os
 import re
 import subprocess
@@ -57,6 +59,18 @@ def run_ffmpeg(args: list, *, text: bool = True, **kwargs) -> subprocess.Complet
         kwargs.setdefault("encoding", "utf-8")
         kwargs.setdefault("errors", "replace")
     return subprocess.run(cmd, **kwargs)
+
+
+def parse_loudnorm_json(ffmpeg_stderr: str) -> Optional[dict]:
+    """The JSON block ``loudnorm=print_format=json`` prints at the end of stderr."""
+    text = ffmpeg_stderr or ""
+    start, end = text.rfind("{"), text.rfind("}")
+    if start == -1 or end < start:
+        return None
+    try:
+        return json.loads(text[start:end + 1])
+    except ValueError:
+        return None
 
 
 _SAMPLE_RATE_RE = re.compile(r"Audio:.*?(\d+) Hz")
@@ -322,8 +336,34 @@ class AudioProcessor:
 
         # highpass=f=15: removes inaudible turntable motor rumble (below 15 Hz) without touching bass
         # adeclick=t=3:b=3: conservative click/pop removal (threshold 3 vs default 2, less likely to catch drum transients)
-        filters = ["highpass=f=15", "adeclick=t=3:b=3", "loudnorm=I=-14:LRA=11:TP=-1"]
+        # Normalisation is a separate, linear gain stage (see _normalise_gain):
+        # single-pass loudnorm compressed dynamics and lifted surface noise.
+        filters = ["highpass=f=15", "adeclick=t=3:b=3"]
         return ", ".join(filters)
+
+    # Linear normalisation targets: loudness goal, but never past this true peak.
+    NORMALISE_TARGET_LUFS = -14.0
+    NORMALISE_CEILING_DBTP = -1.0
+
+    def _normalise_gain(self, input_file: Path, track: Track, af_chain: str) -> Optional[float]:
+        """dB of plain gain to apply after ``af_chain``: towards the loudness
+        target, capped so true peak stays under the ceiling.  One measuring
+        pass; None if it can't be measured (the track is then left as is)."""
+        result = run_ffmpeg(
+            ["-ss", str(track.start), "-t", str(track.duration), "-i", str(input_file),
+             "-af", f"{af_chain}, loudnorm=print_format=json", "-f", "null", "-"],
+            capture_output=True, timeout=600,
+        )
+        stats = parse_loudnorm_json(result.stderr)
+        if not stats:
+            return None
+        try:
+            measured_i, measured_tp = float(stats["input_i"]), float(stats["input_tp"])
+        except (KeyError, ValueError):
+            return None
+        if not (math.isfinite(measured_i) and math.isfinite(measured_tp)):
+            return None  # silent track ("-inf"): leave it alone
+        return min(self.NORMALISE_TARGET_LUFS - measured_i, self.NORMALISE_CEILING_DBTP - measured_tp)
 
     def extract_track(
         self,
@@ -377,9 +417,11 @@ class AudioProcessor:
         # Add audio restoration filter chain if requested
         af_chain = self._build_restoration_filters(restoration_level, hum_freq)
         if af_chain:
+            gain = self._normalise_gain(input_file, track, af_chain)
+            if gain is not None:
+                af_chain += f", volume={gain:.2f}dB"
             args.extend(["-af", af_chain])
-            # loudnorm resamples to 192 kHz internally and keeps that rate on
-            # output; pin the source rate so tracks aren't 4x the size
+            # Keep the source sample rate whatever the filters do
             source_rate = self.get_sample_rate(input_file)
             if source_rate:
                 args.extend(["-ar", str(source_rate)])

@@ -1474,6 +1474,55 @@ function vinylApp() {
             if (this.waveform) this.waveform.pause();
         },
 
+        // Audition a cut on the waveform: {track, edge, off} while playing
+        auditioning: null,
+
+        /** 184.62 -> "3:04.6" */
+        formatCutTime(seconds) {
+            if (seconds == null || isNaN(seconds)) return '';
+            const m = Math.floor(seconds / 60);
+            const s = (seconds - m * 60).toFixed(1).padStart(4, '0');
+            return `${m}:${s}`;
+        },
+
+        /** Zoom the waveform in on a boundary and scroll it to the middle of the view. */
+        focusBoundary(time) {
+            if (!this.waveform) return;
+            const container = document.getElementById('waveform');
+            this.currentZoom = 150;  // px per second: ~0.1 s is easy to grab
+            this.waveform.zoom(this.currentZoom);
+            const visibleSeconds = (container ? container.offsetWidth : 1000) / this.currentZoom;
+            this.waveform.setScrollTime(Math.max(0, time - visibleSeconds / 2));
+            this.waveform.setTime(time);
+            if (container) container.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        },
+
+        /** Play the first (or last) 5 s of a track exactly as it will be exported. */
+        auditionCut(track, edge) {
+            if (!this.waveform) return;
+            const wasThis = this.auditioning && this.auditioning.track === track.number && this.auditioning.edge === edge;
+            this.stopAudition();
+            if (wasThis) return;  // second click stops
+
+            const seconds = 5;
+            const from = edge === 'start' ? track.start : Math.max(track.start, track.end - seconds);
+            const to = edge === 'start' ? Math.min(track.end, track.start + seconds) : track.end;
+            this.focusBoundary(edge === 'start' ? track.start : track.end);
+            this.waveform.setTime(from);
+            const off = this.waveform.on('timeupdate', (t) => {
+                if (t >= to) this.stopAudition();
+            });
+            this.auditioning = { track: track.number, edge, off };
+            this.waveform.play();
+        },
+
+        stopAudition() {
+            if (!this.auditioning) return;
+            this.auditioning.off();
+            this.auditioning = null;
+            if (this.waveform && this.waveform.isPlaying()) this.waveform.pause();
+        },
+
         zoomIn() {
             if (this.waveform) {
                 this.currentZoom = Math.min(this.currentZoom * 1.5, 500);

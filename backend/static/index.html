@@ -627,6 +627,24 @@
                                     <div x-show="!track.editing" class="text-secondary text-sm">
                                         <span x-text="formatTime(track.start)"></span> - <span x-text="formatTime(track.end)"></span> (<span x-text="formatDuration(track.duration)"></span>)
                                     </div>
+                                    <!-- Check each cut: zoom the waveform to it, or hear exactly how the file starts/ends -->
+                                    <div x-show="!track.ignored" class="flex flex-wrap items-center gap-x-6 gap-y-2 mt-2 text-sm">
+                                        <template x-for="edge in ['start', 'end']" :key="edge">
+                                            <div class="flex items-center gap-1.5">
+                                                <span class="text-muted w-10" x-text="edge === 'start' ? 'Start' : 'End'"></span>
+                                                <span class="font-mono text-primary w-16" x-text="formatCutTime(track[edge])"></span>
+                                                <button @click="focusBoundary(track[edge])" :disabled="!waveform"
+                                                        class="px-2 py-1 rounded text-xs text-primary" style="background-color: #F0EFEB;"
+                                                        :title="'Zoom the waveform to this ' + edge + ' so you can drag it precisely'">🔍 Zoom</button>
+                                                <button @click="auditionCut(track, edge)" :disabled="!waveform"
+                                                        class="px-2 py-1 rounded text-xs"
+                                                        :class="auditioning && auditioning.track === track.number && auditioning.edge === edge ? 'btn-danger' : 'btn-primary'"
+                                                        :title="edge === 'start' ? 'Play the first 5 seconds of this track' : 'Play the last 5 seconds of this track'"
+                                                        x-text="auditioning && auditioning.track === track.number && auditioning.edge === edge
+                                                            ? '⏹ Stop' : (edge === 'start' ? '▶ Hear start' : '▶ Hear end')"></button>
+                                            </div>
+                                        </template>
+                                    </div>
                                     <div x-show="track.editing" class="grid grid-cols-2 gap-4 mt-2">
                                         <div>
                                             <label class="block text-xs font-medium text-secondary mb-1">Start Time (seconds)</label>
