@@ -171,3 +171,27 @@ def test_parse_sample_rate():
     stderr = "  Stream #0:0: Audio: pcm_s16le ([1][0][0][0] / 0x0001), 48000 Hz, 2 channels, s16, 1536 kb/s"
     assert parse_sample_rate(stderr) == 48000
     assert parse_sample_rate("no audio here") is None
+
+
+# --- smart rescan edges ------------------------------------------------------
+
+def test_refine_rescan_moves_edges_out_to_strict_scan_and_pads_separators():
+    from track_boundaries import Gap, Track, refine_rescan_boundaries
+    # Rescan (-30 dB) trimmed a quiet 15 s intro; strict scan finds music at 4.8 s
+    tracks = [Track(1, 20.4, 179.7), Track(2, 181.5, 347.9), Track(3, 351.0, 940.0)]
+    strict = [Gap(3.5, 4.8), Gap(542.4, 543.8), Gap(944.8, None)]
+    out = refine_rescan_boundaries(tracks, strict, total_duration=953.75, min_track_length=30)
+
+    assert out[0].start == 4.8                      # intro restored
+    assert out[-1].end == 944.8                     # fade-out restored
+    assert round(out[0].end, 2) == 180.6 and round(out[1].start, 2) == 180.6   # split mid-gap (1.8 s gap)
+    assert out[1].end == 348.9 and out[2].start == 350.0                        # capped at 1 s
+    assert all(t.duration == t.end - t.start for t in out)
+
+
+def test_refine_rescan_never_moves_edges_inward():
+    from track_boundaries import Gap, Track, refine_rescan_boundaries
+    tracks = [Track(1, 2.0, 100.0)]
+    strict = [Gap(1.0, 6.0)]  # strict lead-in ends after the rescan start
+    out = refine_rescan_boundaries(tracks, strict, total_duration=200, min_track_length=30)
+    assert out[0].start == 2.0 and out[0].end == 100.0

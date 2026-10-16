@@ -22,6 +22,7 @@ from track_boundaries import (
     boundaries_from_durations,
     boundaries_from_gaps,
     parse_silence_log,
+    refine_rescan_boundaries,
 )
 
 
@@ -261,18 +262,25 @@ class AudioProcessor:
                     "matched": len(tracks) == target_count,
                 }
                 if info["matched"]:
-                    return tracks, info
+                    return self._refine_rescan(file_path, tracks, total_duration), info
                 if best_tracks is None or abs(len(tracks) - target_count) < abs(
                     len(best_tracks) - target_count
                 ):
                     best_tracks, best_info = tracks, info
 
+            if best_tracks:
+                best_tracks = self._refine_rescan(file_path, best_tracks, total_duration)
             return best_tracks, best_info
 
         except subprocess.TimeoutExpired:
             raise RuntimeError("Silence detection timed out (>5 minutes)")
         except Exception as e:
             raise RuntimeError(f"Smart rescan failed: {e}")
+
+    def _refine_rescan(self, file_path: Path, tracks, total_duration):
+        """Put Smart Rescan's side edges where a normal (strict) scan finds the music."""
+        strict_gaps, _ = self._scan_gaps(file_path, self.silence_threshold, self.min_silence_duration)
+        return refine_rescan_boundaries(tracks, strict_gaps, total_duration, self.min_track_length)
 
     def split_tracks_duration_based(
         self, file_path: Path, durations: List[float], verbose=False

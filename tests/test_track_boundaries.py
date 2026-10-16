@@ -268,14 +268,19 @@ def test_detect_tracks_for_count_escalates_until_match():
 
     with patch(
         "audio_processor.run_ffmpeg",
-        side_effect=[SimpleNamespace(stderr=first_pass), SimpleNamespace(stderr=second_pass)],
+        side_effect=[
+            SimpleNamespace(stderr=first_pass),
+            SimpleNamespace(stderr=second_pass),
+            SimpleNamespace(stderr=_stderr_with_duration()),  # strict edge scan: no gaps
+        ],
     ):
         tracks, info = proc.detect_tracks_for_count(Path("side.wav"), target_count=3)
 
+    # Splits sit up to 1 s into each gap (mid-gap for the 2 s one)
     assert [(t.start, t.end) for t in tracks] == [
-        (0.0, 180.0),
-        (182.0, 400.0),
-        (403.0, 600.0),
+        (0.0, 181.0),
+        (181.0, 401.0),
+        (402.0, 600.0),
     ]
     assert info["matched"] is True
     assert info["silence_threshold"] == -25.0
@@ -289,7 +294,7 @@ def test_detect_tracks_for_count_returns_closest_when_no_match():
 
     with patch(
         "audio_processor.run_ffmpeg",
-        side_effect=[SimpleNamespace(stderr=one_gap)] * 3,
+        side_effect=[SimpleNamespace(stderr=one_gap)] * 4,  # 3 passes + strict edge scan
     ):
         tracks, info = proc.detect_tracks_for_count(Path("side.wav"), target_count=5)
 

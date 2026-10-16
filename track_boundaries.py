@@ -223,3 +223,48 @@ def boundaries_from_durations(durations: List[float]) -> List[Track]:
         current_time = end
 
     return tracks
+
+
+def refine_rescan_boundaries(
+    tracks: List[Track],
+    strict_gaps: List[Gap],
+    total_duration: float,
+    min_track_length: float,
+    max_pad: float = 1.0,
+) -> List[Track]:
+    """Tidy Smart Rescan's Tracks using a strict (quiet-threshold) scan.
+
+    Smart Rescan's permissive thresholds treat a quiet intro or fade-out as
+    silence, so the side's first Track starts late and its last ends early.
+    A strict scan's leading/trailing silence marks where the music really
+    starts and stops; edges only ever move outward to it.  Separators
+    between Tracks move up to ``max_pad`` seconds into each gap (at most its
+    middle), so soft attacks and decays aren't clipped.
+    """
+    if not tracks:
+        return tracks
+    bounds = [[t.start, t.end] for t in tracks]
+
+    lead = next((g for g in strict_gaps if g.end is not None and g.start < min_track_length), None)
+    first_start = lead.end if lead else None
+    if first_start is not None and first_start < bounds[0][0]:
+        bounds[0][0] = first_start
+
+    tail = next((g for g in reversed(strict_gaps)
+                 if g.end is None or total_duration - g.end < min_track_length), None)
+    if tail is not None and tail.start > bounds[-1][1]:
+        bounds[-1][1] = tail.start
+
+    for prev, nxt in zip(bounds, bounds[1:]):
+        gap = nxt[0] - prev[1]
+        if gap > 0:
+            pad = min(max_pad, gap / 2)
+            prev[1] += pad
+            nxt[0] -= pad
+
+    refined = []
+    for t, (start, end) in zip(tracks, bounds):
+        r = Track(t.number, start, end)
+        r.vinyl_number, r.title = t.vinyl_number, t.title
+        refined.append(r)
+    return refined
