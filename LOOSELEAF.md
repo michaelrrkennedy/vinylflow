@@ -43,3 +43,14 @@ Then open `http://<ubuntu tailscale name>:8000` from any device on the tailnet.
 output folder so the Looseleaf collection page can play them. AIFF is
 transcoded to a cached MP3 (in `temp_uploads/library_previews/`) since most
 browsers can't play it.
+
+## HTTPS
+
+Served on the tailnet at `https://journey.tailc71b03.ts.net` (Chrome holds
+plain-http downloads as "Unconfirmed .crdownload", which breaks dragging
+tracks out of the Looseleaf collection page). One-off setup:
+
+```bash
+sudo tailscale set --operator=mk          # once, so mk can manage serve
+tailscale serve --bg --https=443 http://100.113.192.7:8000
+```
