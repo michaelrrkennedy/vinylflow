@@ -245,15 +245,19 @@ def refine_rescan_boundaries(
         return tracks
     bounds = [[t.start, t.end] for t in tracks]
 
-    lead = next((g for g in strict_gaps if g.end is not None and g.start < min_track_length), None)
-    first_start = lead.end if lead else None
-    if first_start is not None and first_start < bounds[0][0]:
-        bounds[0][0] = first_start
+    # The music starts after the *last* strict silence before the first
+    # Track (earlier ones are needle-drop/run-in), and ends at the *first*
+    # strict silence after the last Track.
+    lead = [g for g in strict_gaps
+            if g.end is not None and g.start < min_track_length and g.end <= bounds[0][0]]
+    if lead:
+        bounds[0][0] = lead[-1].end
 
-    tail = next((g for g in reversed(strict_gaps)
-                 if g.end is None or total_duration - g.end < min_track_length), None)
-    if tail is not None and tail.start > bounds[-1][1]:
-        bounds[-1][1] = tail.start
+    tail = [g for g in strict_gaps
+            if g.start >= bounds[-1][1]
+            and (g.end is None or total_duration - g.end < min_track_length)]
+    if tail:
+        bounds[-1][1] = tail[0].start
 
     for prev, nxt in zip(bounds, bounds[1:]):
         gap = nxt[0] - prev[1]

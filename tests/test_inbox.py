@@ -179,7 +179,7 @@ def test_refine_rescan_moves_edges_out_to_strict_scan_and_pads_separators():
     from track_boundaries import Gap, Track, refine_rescan_boundaries
     # Rescan (-30 dB) trimmed a quiet 15 s intro; strict scan finds music at 4.8 s
     tracks = [Track(1, 20.4, 179.7), Track(2, 181.5, 347.9), Track(3, 351.0, 940.0)]
-    strict = [Gap(3.5, 4.8), Gap(542.4, 543.8), Gap(944.8, None)]
+    strict = [Gap(0.6, 1.5), Gap(3.5, 4.8), Gap(542.4, 543.8), Gap(944.8, 947.0), Gap(950.0, None)]
     out = refine_rescan_boundaries(tracks, strict, total_duration=953.75, min_track_length=30)
 
     assert out[0].start == 4.8                      # intro restored

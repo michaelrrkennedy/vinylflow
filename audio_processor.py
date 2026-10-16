@@ -279,7 +279,9 @@ class AudioProcessor:
 
     def _refine_rescan(self, file_path: Path, tracks, total_duration):
         """Put Smart Rescan's side edges where a normal (strict) scan finds the music."""
-        strict_gaps, _ = self._scan_gaps(file_path, self.silence_threshold, self.min_silence_duration)
+        # Quiet threshold, but short silences count: the run-in groove before
+        # the first note can be well under the usual minimum gap length
+        strict_gaps, _ = self._scan_gaps(file_path, self.silence_threshold, min(self.min_silence_duration, 0.5))
         return refine_rescan_boundaries(tracks, strict_gaps, total_duration, self.min_track_length)
 
     def split_tracks_duration_based(
