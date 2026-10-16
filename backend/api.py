@@ -928,6 +928,36 @@ def library_file(rel_path: str) -> Path:
     return path
 
 
+@app.get("/api/library-info/{rel_path:path}")
+async def get_library_info(rel_path: str, points: int = 1000):
+    """Length and waveform peaks of a finished track, for the Looseleaf player
+    (so the browser needn't download and decode the file to draw it)."""
+    import numpy as np
+
+    path = library_file(rel_path)
+    points = max(50, min(points, 4000))
+    cache_dir = UPLOAD_DIR / "library_previews"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    key = uuid.uuid5(uuid.NAMESPACE_URL, f"{path}:{path.stat().st_mtime_ns}:{points}")
+    cached = cache_dir / f"{key}.json"
+    if cached.exists():
+        return JSONResponse(content=json.loads(cached.read_text()))
+
+    result = await asyncio.to_thread(
+        run_ffmpeg,
+        ["-i", str(path), "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", "8000", "-"],
+        text=False, capture_output=True, check=True,
+    )
+    audio = np.abs(np.frombuffer(result.stdout, dtype=np.int16).astype(np.int32))
+    duration = len(audio) / 8000.0
+    per = max(1, len(audio) // points)
+    usable = (len(audio) // per) * per
+    peaks = (audio[:usable].reshape(-1, per).max(axis=1) / 32768.0).round(4).tolist() if usable else [0.0]
+    info = {"duration": round(duration, 2), "peaks": peaks}
+    cached.write_text(json.dumps(info))
+    return JSONResponse(content=info)
+
+
 @app.delete("/api/library/{rel_path:path}")
 async def delete_library_file(rel_path: str):
     """Delete a finished track from the output folder (Looseleaf: tracks not kept)."""

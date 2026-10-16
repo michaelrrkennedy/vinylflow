@@ -230,3 +230,20 @@ def test_library_delete_stays_inside_output(tmp_path, monkeypatch):
     assert client.delete("/api/library/A - T/B2-x.aiff").status_code == 404
     assert client.delete("/api/library/..%2Foutside.aiff").status_code == 404
     assert (tmp_path / "outside.aiff").exists()
+
+
+def test_library_info_gives_duration_and_peaks(tmp_path, monkeypatch):
+    import subprocess
+    monkeypatch.setattr(api.config, "default_output_dir", str(tmp_path / "music"))
+    monkeypatch.setattr(api, "UPLOAD_DIR", tmp_path / "uploads")
+    album = tmp_path / "music" / "A - T"
+    album.mkdir(parents=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=d=4", "-ac", "2",
+                    str(album / "B1-x.aiff")], check=True)
+    client = TestClient(api.app)
+
+    info = client.get("/api/library-info/A - T/B1-x.aiff?points=200").json()
+    assert abs(info["duration"] - 4.0) < 0.05
+    assert len(info["peaks"]) == 200 and 0 < max(info["peaks"]) <= 1
+    assert client.get("/api/library-info/A - T/B1-x.aiff?points=200").json() == info  # cached
+    assert client.get("/api/library-info/..%2Fx.aiff").status_code == 404
